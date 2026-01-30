@@ -37,6 +37,7 @@ resume_ema: true
 lambda_gan: 0.5
 lambda_lpips: 5
 lambda_l2: 1
+lambda_l1: 1 # Add L1 loss for better pixel-level supervision
 lr_G: 1e-5
 lr_D: 1e-5
 optimizer_type: adam

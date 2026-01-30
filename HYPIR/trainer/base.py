@@ -22,7 +22,12 @@ from diffusers import AutoencoderKL
 from PIL import Image
 
 from HYPIR.model.D import ImageConvNextDiscriminator
-from HYPIR.utils.common import instantiate_from_config, log_txt_as_img, print_vram_state, SuppressLogging
+from HYPIR.utils.common import (
+    instantiate_from_config,
+    log_txt_as_img,
+    print_vram_state,
+    SuppressLogging,
+)
 from HYPIR.utils.ema import EMAModel
 from HYPIR.utils.tabulate import tabulate
 
@@ -36,7 +41,6 @@ logging.basicConfig(
 
 
 class BatchInput:
-
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
 
@@ -51,7 +55,6 @@ class BatchInput:
 
 
 class BaseTrainer:
-
     def __init__(self, config):
         self.config = config
         set_seed(config.seed)
@@ -64,7 +67,9 @@ class BaseTrainer:
 
     def init_environment(self):
         logging_dir = Path(self.config.output_dir, self.config.logging_dir)
-        accelerator_project_config = ProjectConfiguration(project_dir=self.config.output_dir, logging_dir=logging_dir)
+        accelerator_project_config = ProjectConfiguration(
+            project_dir=self.config.output_dir, logging_dir=logging_dir
+        )
         accelerator = Accelerator(
             gradient_accumulation_steps=self.config.gradient_accumulation_steps,
             log_with=self.config.report_to,
@@ -106,20 +111,18 @@ class BaseTrainer:
         self.init_lpips()
 
     @overload
-    def init_scheduler(self):
-        ...
+    def init_scheduler(self): ...
 
     @overload
-    def init_text_models(self):
-        ...
+    def init_text_models(self): ...
 
     @overload
-    def encode_prompt(self, prompt: List[str]) -> Dict[str, torch.Tensor]:
-        ...
+    def encode_prompt(self, prompt: List[str]) -> Dict[str, torch.Tensor]: ...
 
     def init_vae(self):
         self.vae = AutoencoderKL.from_pretrained(
-            self.config.base_model_path, subfolder="vae", torch_dtype=self.weight_dtype).to(self.device)
+            self.config.base_model_path, subfolder="vae", torch_dtype=self.weight_dtype
+        ).to(self.device)
         self.vae.eval().requires_grad_(False)
 
     def init_lpips(self):
@@ -130,8 +133,7 @@ class BaseTrainer:
         self.net_lpips.eval().requires_grad_(False)
 
     @overload
-    def init_generator(self):
-        ...
+    def init_generator(self): ...
 
     def init_discriminator(self):
         # Suppress logs from open-clip
@@ -152,9 +154,19 @@ class BaseTrainer:
             model = value
             model_type = type(model).__name__
             total_params = sum(p.numel() for p in model.parameters()) / 1_000_000
-            learnable_params = sum(p.numel() for p in model.parameters() if p.requires_grad) / 1_000_000
-            table_data.append([attr, model_type, f"{total_params:.2f}", f"{learnable_params:.2f}"])
-        headers = ["Model Name", "Model Type", "Total Parameters (M)", "Learnable Parameters (M)"]
+            learnable_params = (
+                sum(p.numel() for p in model.parameters() if p.requires_grad)
+                / 1_000_000
+            )
+            table_data.append(
+                [attr, model_type, f"{total_params:.2f}", f"{learnable_params:.2f}"]
+            )
+        headers = [
+            "Model Name",
+            "Model Type",
+            "Total Parameters (M)",
+            "Learnable Parameters (M)",
+        ]
         table = tabulate(table_data, headers=headers, tablefmt="pretty")
         logger.info(f"Model Summary:\n{table}")
 
@@ -195,14 +207,16 @@ class BaseTrainer:
     def prepare_all(self):
         logger.info("Wrapping models, optimizers and dataloaders")
         attrs = ["G", "D", "G_opt", "D_opt", "dataloader"]
-        prepared_objs = self.accelerator.prepare(*[getattr(self, attr) for attr in attrs])
+        prepared_objs = self.accelerator.prepare(
+            *[getattr(self, attr) for attr in attrs]
+        )
         for attr, obj in zip(attrs, prepared_objs):
             setattr(self, attr, obj)
         print_vram_state("After accelerator.prepare", logger=logger)
 
     def force_optimizer_ckpt_safe(self, checkpoint_dir):
         def get_symbol(s):
-            module_name, symbol_name = s.rsplit('.', 1)
+            module_name, symbol_name = s.rsplit(".", 1)
             module = importlib.import_module(module_name)
             symbol = getattr(module, symbol_name)
             return symbol
@@ -215,14 +229,17 @@ class BaseTrainer:
                 unsafe_globals = list(map(get_symbol, unsafe_globals))
                 add_safe_globals(unsafe_globals)
 
-    def attach_accelerator_hooks(self):
-        ...
+    def attach_accelerator_hooks(self): ...
 
     def on_training_start(self):
         # Build ema state dict
-        logger.info(f"Creating EMA handler, Use EMA = {self.config.use_ema}, EMA decay = {self.config.ema_decay}")
+        logger.info(
+            f"Creating EMA handler, Use EMA = {self.config.use_ema}, EMA decay = {self.config.ema_decay}"
+        )
         if self.config.resume_from_checkpoint is not None and self.config.resume_ema:
-            ema_resume_pth = os.path.join(self.config.resume_from_checkpoint, "ema_state_dict.pth")
+            ema_resume_pth = os.path.join(
+                self.config.resume_from_checkpoint, "ema_state_dict.pth"
+            )
         else:
             ema_resume_pth = None
         self.ema_handler = EMAModel(
@@ -261,9 +278,12 @@ class BaseTrainer:
         bs = len(prompt)
         c_txt = self.encode_prompt(prompt)
         z_lq = self.vae.encode(lq.to(self.weight_dtype)).latent_dist.sample()
-        timesteps = torch.full((bs,), self.config.model_t, dtype=torch.long, device=self.device)
+        timesteps = torch.full(
+            (bs,), self.config.model_t, dtype=torch.long, device=self.device
+        )
         self.batch_inputs = BatchInput(
-            gt=gt, lq=lq,
+            gt=gt,
+            lq=lq,
             z_lq=z_lq,
             c_txt=c_txt,
             timesteps=timesteps,
@@ -271,25 +291,42 @@ class BaseTrainer:
         )
 
     @overload
-    def forward_generator(self) -> torch.Tensor:
-        ...
+    def forward_generator(self) -> torch.Tensor: ...
 
     def optimize_generator(self):
         with self.accelerator.accumulate(self.G):
             self.unwrap_model(self.D).eval().requires_grad_(False)
             x = self.forward_generator()
             self.G_pred = x
-            loss_l2 = F.mse_loss(x, self.batch_inputs.gt, reduction="mean") * self.config.lambda_l2
-            loss_lpips = self.net_lpips(x, self.batch_inputs.gt).mean() * self.config.lambda_lpips
+            loss_l2 = (
+                F.mse_loss(x, self.batch_inputs.gt, reduction="mean")
+                * self.config.lambda_l2
+            )
+            loss_l1 = (
+                F.l1_loss(x, self.batch_inputs.gt, reduction="mean")
+                * self.config.lambda_l1
+            )
+            loss_lpips = (
+                self.net_lpips(x, self.batch_inputs.gt).mean()
+                * self.config.lambda_lpips
+            )
             loss_disc = self.D(x, for_G=True).mean() * self.config.lambda_gan
-            loss_G = loss_l2 + loss_lpips + loss_disc
+            loss_G = loss_l2 + loss_lpips + loss_disc + loss_l1
             self.accelerator.backward(loss_G)
             if self.accelerator.sync_gradients:
-                self.accelerator.clip_grad_norm_(self.G_params, self.config.max_grad_norm)
+                self.accelerator.clip_grad_norm_(
+                    self.G_params, self.config.max_grad_norm
+                )
             self.G_opt.step()
             self.G_opt.zero_grad()
         # Log something
-        loss_dict = dict(G_total=loss_G, G_mse=loss_l2, G_lpips=loss_lpips, G_disc=loss_disc)
+        loss_dict = dict(
+            G_total=loss_G,
+            G_mse=loss_l2,
+            G_l1=loss_l1,
+            G_lpips=loss_lpips,
+            G_disc=loss_disc,
+        )
         return loss_dict
 
     def optimize_discriminator(self):
@@ -304,14 +341,20 @@ class BaseTrainer:
             loss_D = loss_D_real.mean() + loss_D_fake.mean()
             self.accelerator.backward(loss_D)
             if self.accelerator.sync_gradients:
-                self.accelerator.clip_grad_norm_(self.D_params, self.config.max_grad_norm)
+                self.accelerator.clip_grad_norm_(
+                    self.D_params, self.config.max_grad_norm
+                )
             self.D_opt.step()
             self.D_opt.zero_grad()
         loss_dict = dict(D=loss_D)
         # logits = D(x) w/o sigmoid = log(p_real(x) / p_fake(x))
         with torch.no_grad():
-            real_logits = torch.tensor([logit_map.mean() for logit_map in real_logits], device=self.device).mean()
-            fake_logits = torch.tensor([logit_map.mean() for logit_map in fake_logits], device=self.device).mean()
+            real_logits = torch.tensor(
+                [logit_map.mean() for logit_map in real_logits], device=self.device
+            ).mean()
+            fake_logits = torch.tensor(
+                [logit_map.mean() for logit_map in fake_logits], device=self.device
+            ).mean()
         loss_dict.update(dict(D_logits_real=real_logits, D_logits_fake=fake_logits))
         return loss_dict
 
@@ -324,7 +367,9 @@ class BaseTrainer:
             for batch in self.dataloader:
                 self.prepare_batch_inputs(batch)
                 bs = len(self.batch_inputs.lq)
-                generator_step = ((self.batch_count // self.config.gradient_accumulation_steps) % 2) == 0
+                generator_step = (
+                    (self.batch_count // self.config.gradient_accumulation_steps) % 2
+                ) == 0
                 if generator_step:
                     loss_dict = self.optimize_generator()
                 else:
@@ -334,14 +379,20 @@ class BaseTrainer:
                     avg_loss = self.accelerator.gather(v.repeat(bs)).mean()
                     if k not in train_loss:
                         train_loss[k] = 0
-                    train_loss[k] += avg_loss.item() / self.config.gradient_accumulation_steps
+                    train_loss[k] += (
+                        avg_loss.item() / self.config.gradient_accumulation_steps
+                    )
 
                 self.batch_count += 1
                 if self.accelerator.sync_gradients:
                     if generator_step:
                         # update EMA
                         self.ema_handler.update()
-                    state = "Generator     Step" if not generator_step else "Discriminator Step"
+                    state = (
+                        "Generator     Step"
+                        if not generator_step
+                        else "Discriminator Step"
+                    )
                     _, _, peak = print_vram_state(None)
                     self.pbar.set_description(f"{state}, VRAM peak: {peak:.2f} GB")
 
@@ -353,11 +404,20 @@ class BaseTrainer:
                         log_dict[f"loss/{k}"] = train_loss[k]
                     train_loss = {}
                     self.accelerator.log(log_dict, step=self.global_step)
-                    if self.global_step % self.config.log_image_steps == 0 or self.global_step == 1:
+                    if (
+                        self.global_step % self.config.log_image_steps == 0
+                        or self.global_step == 1
+                    ):
                         self.log_images()
-                    if self.global_step % self.config.log_grad_steps == 0 or self.global_step == 1:
+                    if (
+                        self.global_step % self.config.log_grad_steps == 0
+                        or self.global_step == 1
+                    ):
                         self.log_grads()
-                    if self.global_step % self.config.checkpointing_steps == 0 or self.global_step == 1:
+                    if (
+                        self.global_step % self.config.checkpointing_steps == 0
+                        or self.global_step == 1
+                    ):
                         self.save_checkpoint()
 
                 if self.global_step >= self.config.max_train_steps:
@@ -393,10 +453,22 @@ class BaseTrainer:
                     )
 
         for key, images in image_logs.items():
-            image_arrs = (images * 255.0).clamp(0, 255).to(torch.uint8) \
-                .permute(0, 2, 3, 1).contiguous().cpu().numpy()
+            image_arrs = (
+                (images * 255.0)
+                .clamp(0, 255)
+                .to(torch.uint8)
+                .permute(0, 2, 3, 1)
+                .contiguous()
+                .cpu()
+                .numpy()
+            )
             save_dir = os.path.join(
-                self.config.output_dir, self.config.logging_dir, "log_images", f"{self.global_step:07}", key)
+                self.config.output_dir,
+                self.config.logging_dir,
+                "log_images",
+                f"{self.global_step:07}",
+                key,
+            )
             if not os.path.exists(save_dir):
                 os.makedirs(save_dir)
             for i, img in enumerate(image_arrs):
@@ -405,10 +477,23 @@ class BaseTrainer:
     def log_grads(self):
         self.unwrap_model(self.D).eval().requires_grad_(False)
         x = self.forward_generator()
-        loss_l2 = F.mse_loss(x, self.batch_inputs.gt, reduction="mean") * self.config.lambda_l2
-        loss_lpips = self.net_lpips(x, self.batch_inputs.gt).mean() * self.config.lambda_lpips
+        loss_l2 = (
+            F.mse_loss(x, self.batch_inputs.gt, reduction="mean")
+            * self.config.lambda_l2
+        )
+        loss_l1 = (
+            F.l1_loss(x, self.batch_inputs.gt, reduction="mean") * self.config.lambda_l1
+        )
+        loss_lpips = (
+            self.net_lpips(x, self.batch_inputs.gt).mean() * self.config.lambda_lpips
+        )
         loss_disc = self.D(x, for_G=True).mean() * self.config.lambda_gan
-        losses = [("l2", loss_l2), ("lpips", loss_lpips), ("disc", loss_disc)]
+        losses = [
+            ("l2", loss_l2),
+            ("l1", loss_l1),
+            ("lpips", loss_lpips),
+            ("disc", loss_disc),
+        ]
         grad_dict = {}
         self.G_opt.zero_grad()
         for idx, (name, loss) in enumerate(losses):
@@ -418,9 +503,13 @@ class BaseTrainer:
             for module_name, module in self.unwrap_model(self.G).named_modules():
                 for suffix in self.config.log_grad_modules:
                     if module_name.endswith(suffix):
-                        flat_grad = torch.cat([
-                            p.grad.flatten() for p in module.parameters() if p.requires_grad
-                        ])
+                        flat_grad = torch.cat(
+                            [
+                                p.grad.flatten()
+                                for p in module.parameters()
+                                if p.requires_grad
+                            ]
+                        )
                         lora_module_grads.setdefault(suffix, []).append(flat_grad)
                         break
             for k, v in lora_module_grads.items():
@@ -435,14 +524,24 @@ class BaseTrainer:
                 checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
                 checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
                 if len(checkpoints) >= self.config.checkpoints_total_limit:
-                    num_to_remove = len(checkpoints) - self.config.checkpoints_total_limit + 1
+                    num_to_remove = (
+                        len(checkpoints) - self.config.checkpoints_total_limit + 1
+                    )
                     removing_checkpoints = checkpoints[0:num_to_remove]
-                    logger.info(f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints")
-                    logger.info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
+                    logger.info(
+                        f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
+                    )
+                    logger.info(
+                        f"removing checkpoints: {', '.join(removing_checkpoints)}"
+                    )
                     for removing_checkpoint in removing_checkpoints:
-                        removing_checkpoint = os.path.join(self.config.output_dir, removing_checkpoint)
+                        removing_checkpoint = os.path.join(
+                            self.config.output_dir, removing_checkpoint
+                        )
                         shutil.rmtree(removing_checkpoint)
-            save_path = os.path.join(self.config.output_dir, f"checkpoint-{self.global_step}")
+            save_path = os.path.join(
+                self.config.output_dir, f"checkpoint-{self.global_step}"
+            )
             self.accelerator.save_state(save_path)
             logger.info(f"Saved state to {save_path}")
 
