@@ -10,16 +10,10 @@ def main():
         description="Create paired dataset metadata parquet file."
     )
     parser.add_argument(
-        "--lq_dir",
+        "--dataset_root",
         type=str,
         required=True,
-        help="Path to the directory containing low-quality images.",
-    )
-    parser.add_argument(
-        "--gt_dir",
-        type=str,
-        required=True,
-        help="Path to the directory containing ground-truth images.",
+        help="Path to the dataset root (e.g. AIO/Train).",
     )
     parser.add_argument(
         "--output",
@@ -44,54 +38,65 @@ def main():
 
     args = parser.parse_args()
 
-    lq_files = []
-    for ext in args.exts:
-        lq_files.extend(glob(os.path.join(args.lq_dir, f"*.{ext}")))
-
-    print(f"Found {len(lq_files)} LQ images.")
-
     data = []
-    for lq_path in tqdm(lq_files):
-        filename = os.path.basename(lq_path)
-        gt_path = os.path.join(args.gt_dir, filename)
 
-        if os.path.exists(gt_path):
+    # Expected structure: root/Type/LQ/img.png and root/Type/GT/img.png
+    # Iterate over all subdirectories in root
+    for type_name in os.listdir(args.dataset_root):
+        type_dir = os.path.join(args.dataset_root, type_name)
+        if not os.path.isdir(type_dir):
+            continue
+
+        lq_dir = os.path.join(type_dir, "LQ")
+        gt_dir = os.path.join(type_dir, "GT")
+
+        if not (os.path.exists(lq_dir) and os.path.exists(gt_dir)):
+            print(f"Skipping {type_name}: missing LQ or GT folder")
+            continue
+
+        print(f"Processing {type_name}...")
+
+        lq_files = []
+        for ext in args.exts:
+            lq_files.extend(glob(os.path.join(lq_dir, f"*.{ext}")))
+
+        for lq_path in lq_files:
+            filename = os.path.basename(lq_path)
+            gt_path = os.path.join(gt_dir, filename)
+
             prompt = args.prompt
             if args.use_filename_as_prompt:
-                # simple clean up: replace _ with space
                 prompt = os.path.splitext(filename)[0].replace("_", " ")
 
-            data.append(
-                {
-                    "lq_path": os.path.abspath(lq_path),
-                    "gt_path": os.path.abspath(gt_path),
-                    "prompt": prompt,
-                }
-            )
-        else:
-            # Try with other extensions
-            found = False
-            base_name = os.path.splitext(filename)[0]
-            for ext in args.exts:
-                gt_path_prob = os.path.join(args.gt_dir, f"{base_name}.{ext}")
-                if os.path.exists(gt_path_prob):
-                    prompt = args.prompt
-                    if args.use_filename_as_prompt:
-                        prompt = os.path.splitext(filename)[0].replace("_", " ")
+            # Check exact match first
+            if os.path.exists(gt_path):
+                data.append(
+                    {
+                        "lq_path": os.path.abspath(lq_path),
+                        "gt_path": os.path.abspath(gt_path),
+                        "prompt": prompt,
+                    }
+                )
+            else:
+                # Try other extensions
+                found = False
+                base_name = os.path.splitext(filename)[0]
+                for ext in args.exts:
+                    gt_path_prob = os.path.join(gt_dir, f"{base_name}.{ext}")
+                    if os.path.exists(gt_path_prob):
+                        data.append(
+                            {
+                                "lq_path": os.path.abspath(lq_path),
+                                "gt_path": os.path.abspath(gt_path_prob),
+                                "prompt": prompt,
+                            }
+                        )
+                        found = True
+                        break
+                if not found:
+                    pass  # Silently skip or warn?
 
-                    data.append(
-                        {
-                            "lq_path": os.path.abspath(lq_path),
-                            "gt_path": os.path.abspath(gt_path_prob),
-                            "prompt": prompt,
-                        }
-                    )
-                    found = True
-                    break
-            if not found:
-                print(f"Warning: GT image not found for {lq_path}")
-
-    print(f"Matched {len(data)} pairs.")
+    print(f"Matched {len(data)} pairs total.")
 
     if len(data) == 0:
         print("No pairs found. Exiting.")
