@@ -1,0 +1,59 @@
+output_dir: TODO # Will be set at runtime or can run with --output_dir
+
+data_config:
+  train:
+    batch_size: 1 # Increased batch size since we are not doing heavy degradations (512x512)
+    dataloader_num_workers: 4
+    dataset:
+      target: HYPIR.dataset.paired.PairedParquetDataset
+      params:
+        file_meta:
+          file_list: TODO # Will be set by user or script
+          lq_key: lq_path
+          gt_key: gt_path
+          prompt_key: prompt
+        out_size: 512
+        crop_type: none # Assuming provided images are already cropped or resized
+        use_hflip: true
+        use_rot: true
+        return_file_name: false
+
+    batch_transform:
+      target: HYPIR.dataset.batch_transform.IdentityBatchTransform
+      params:
+        hq_key: GT
+        extra_keys: [LQ, txt]
+
+base_model_type: sd2
+base_model_path: stabilityai/stable-diffusion-2-1-base
+model_t: 200
+coeff_t: 200
+lora_rank: 256
+lora_modules: [to_k, to_q, to_v, to_out.0, conv, conv1, conv2, conv_shortcut, conv_out, proj_in, proj_out, ff.net.2, ff.net.0.proj]
+use_ema: true
+ema_decay: 0.999
+resume_ema: true
+
+lambda_gan: 0.5
+lambda_lpips: 5
+lambda_l2: 1
+lr_G: 1e-5
+lr_D: 1e-5
+optimizer_type: adam
+opt_kwargs:
+  betas: [0.9, 0.999]
+
+mixed_precision: bf16 # Use bf16 for speed and memory saving on Ampere+ GPUs
+seed: 231
+max_train_steps: 10000 # Adjusted for 5k dataset
+gradient_accumulation_steps: 1
+gradient_checkpointing: true
+max_grad_norm: 1.0
+logging_dir: logs
+report_to: tensorboard
+checkpointing_steps: 500
+checkpoints_total_limit: 2
+resume_from_checkpoint: ~ # Can be set to resume training
+log_image_steps: 100
+log_grad_steps: 100
+log_grad_modules: [conv_out]
