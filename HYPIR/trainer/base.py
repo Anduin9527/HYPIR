@@ -63,6 +63,8 @@ class BaseTrainer:
         self.summary_models()
         self.init_optimizers()
         self.init_dataset()
+        self.init_val_dataset()      # 新增：初始化验证集
+        self.init_metrics()          # 新增：初始化评估指标
         self.prepare_all()
 
     def init_environment(self):
@@ -70,15 +72,40 @@ class BaseTrainer:
         accelerator_project_config = ProjectConfiguration(
             project_dir=self.config.output_dir, logging_dir=logging_dir
         )
+        
+        # 如果使用swanlab，不要传递给Accelerator的log_with（因为不被支持）
+        log_with = None if self.config.report_to == "swanlab" else self.config.report_to
+        
         accelerator = Accelerator(
             gradient_accumulation_steps=self.config.gradient_accumulation_steps,
-            log_with=self.config.report_to,
+            log_with=log_with,
             project_config=accelerator_project_config,
             mixed_precision=self.config.mixed_precision,
         )
         logger.info(accelerator.state, main_process_only=True)
+        
+        # 初始化tracker（支持swanlab和tensorboard）
         if accelerator.is_main_process:
-            accelerator.init_trackers("train")
+            if self.config.report_to == "swanlab":
+                # SwanLab需要显式初始化
+                import swanlab
+                # 使用配置文件名作为实验名称
+                config_name = getattr(self.config, "config_name", "unknown")
+                swanlab_config = {
+                    "project": self.config.get("swanlab_project", "HYPIR-training"),
+                    "experiment_name": config_name,
+                    "config": dict(self.config),
+                }
+                # 如果有工作空间配置
+                if hasattr(self.config, "swanlab_workspace"):
+                    swanlab_config["workspace"] = self.config.swanlab_workspace
+                
+                swanlab.init(**swanlab_config)
+                logger.info(f"Initialized SwanLab tracker: project={swanlab_config['project']}, experiment={config_name}")
+            elif log_with is not None:
+                # TensorBoard等其他tracker通过accelerator.init_trackers初始化
+                accelerator.init_trackers("train")
+        
         if accelerator.is_local_main_process:
             transformers.utils.logging.set_verbosity_warning()
             diffusers.utils.logging.set_verbosity_warning()
@@ -204,6 +231,166 @@ class BaseTrainer:
         )
         self.batch_transform = instantiate_from_config(data_cfg.train.batch_transform)
 
+    def init_val_dataset(self):
+        if not hasattr(self.config, 'data_config') or not hasattr(self.config.data_config, 'val'):
+            logger.warning("No validation config found, skipping validation")
+            self.val_samples = None
+            return
+        
+        val_cfg = self.config.data_config.val
+        val_dir = val_cfg.val_dir
+        degradation_types = val_cfg.degradation_types
+        num_samples_per_type = val_cfg.get('num_samples_per_type', None)
+        
+        # 构建验证样本列表
+        val_samples = []
+        for deg_type in degradation_types:
+            lq_dir = os.path.join(val_dir, deg_type, 'LQ')
+            gt_dir = os.path.join(val_dir, deg_type, 'GT')
+            
+            if not os.path.exists(lq_dir) or not os.path.exists(gt_dir):
+                logger.warning(f"Validation directory not found: {lq_dir} or {gt_dir}")
+                continue
+            
+            lq_files = sorted([f for f in os.listdir(lq_dir) if f.endswith(('.jpg', '.png'))])
+            # 如果num_samples_per_type为None，则使用全部图片
+            if num_samples_per_type is not None:
+                lq_files = lq_files[:num_samples_per_type]
+            
+            for lq_file in lq_files:
+                val_samples.append({
+                    'lq_path': os.path.join(lq_dir, lq_file),
+                    'gt_path': os.path.join(gt_dir, lq_file),
+                    'deg_type': deg_type
+                })
+        
+        self.val_samples = val_samples
+        logger.info(f"Loaded {len(val_samples)} validation samples")
+
+    def init_metrics(self):
+        # 使用pyiqa初始化评估指标
+        import pyiqa
+        self.metric_psnr = pyiqa.create_metric('psnr', test_y_channel=True, color_space='ycbcr').to(self.device)
+        self.metric_ssim = pyiqa.create_metric('ssim', test_y_channel=True, color_space='ycbcr').to(self.device)
+        # LPIPS已在init_lpips中初始化，使用self.net_lpips
+        logger.info("Initialized pyiqa metrics: PSNR, SSIM")
+
+    @torch.no_grad()
+    def validate(self):
+        if not hasattr(self, 'val_samples') or self.val_samples is None or len(self.val_samples) == 0:
+            return
+        
+        logger.info(f"Starting validation at step {self.global_step}")
+        self.unwrap_model(self.G).eval()
+        
+        # 如果使用EMA，激活EMA权重
+        if self.config.use_ema:
+            self.ema_handler.activate_ema_weights()
+        
+        metrics_per_type = {}
+        all_psnr, all_ssim, all_lpips = [], [], []
+        
+        from torchvision import transforms
+        import numpy as np
+        
+        for sample in tqdm(self.val_samples, desc="Validating", disable=not self.accelerator.is_main_process):
+            # 加载图像
+            lq_img = Image.open(sample['lq_path']).convert('RGB')
+            gt_img = Image.open(sample['gt_path']).convert('RGB')
+            
+            # 转换为tensor
+            transform = transforms.Compose([
+                transforms.Resize((512, 512)),
+                transforms.ToTensor(),
+                transforms.Lambda(lambda x: x * 2 - 1)  # [0,1] -> [-1,1]
+            ])
+            lq = transform(lq_img).unsqueeze(0).to(self.device)
+            gt = transform(gt_img).unsqueeze(0).to(self.device)
+            
+            # 编码并前向推理
+            prompt = ["high quality, sharp details"]
+            c_txt = self.encode_prompt(prompt)
+            z_lq = self.vae.encode(lq.to(self.weight_dtype)).latent_dist.sample()
+            timesteps = torch.full((1,), self.config.model_t, dtype=torch.long, device=self.device)
+            
+            # 临时构建batch_inputs
+            temp_batch = BatchInput(
+                gt=gt, lq=lq, z_lq=z_lq, c_txt=c_txt, 
+                timesteps=timesteps, prompt=prompt
+            )
+            original_batch = self.batch_inputs if hasattr(self, 'batch_inputs') else None
+            self.batch_inputs = temp_batch
+            
+            pred = self.forward_generator()
+            
+            if original_batch is not None:
+                self.batch_inputs = original_batch
+            
+            # 使用pyiqa计算指标 (输入范围 [0, 1])，clamp确保严格在[0,1]内
+            pred_01 = ((pred + 1) / 2).clamp(0, 1)  # [-1, 1] -> [0, 1]
+            gt_01 = ((gt + 1) / 2).clamp(0, 1)      # [-1, 1] -> [0, 1]
+            
+            psnr = self.metric_psnr(pred_01, gt_01).item()
+            ssim = self.metric_ssim(pred_01, gt_01).item()
+            lpips_val = self.net_lpips(pred, gt).mean().item()
+            
+            all_psnr.append(psnr)
+            all_ssim.append(ssim)
+            all_lpips.append(lpips_val)
+            
+            # 按退化类型统计
+            deg_type = sample['deg_type']
+            if deg_type not in metrics_per_type:
+                metrics_per_type[deg_type] = {'psnr': [], 'ssim': [], 'lpips': []}
+            metrics_per_type[deg_type]['psnr'].append(psnr)
+            metrics_per_type[deg_type]['ssim'].append(ssim)
+            metrics_per_type[deg_type]['lpips'].append(lpips_val)
+        
+        # 恢复训练模式
+        if self.config.use_ema:
+            self.ema_handler.deactivate_ema_weights()
+        self.unwrap_model(self.G).train()
+        
+        # 汇总指标
+        avg_psnr = np.mean(all_psnr)
+        avg_ssim = np.mean(all_ssim)
+        avg_lpips = np.mean(all_lpips)
+        final_score = avg_psnr + 10 * avg_ssim - 5 * avg_lpips
+        
+        # 记录日志
+        log_dict = {
+            'val/PSNR': avg_psnr,
+            'val/SSIM': avg_ssim,
+            'val/LPIPS': avg_lpips,
+            'val/Final_Score': final_score
+        }
+        
+        # 记录每种退化类型的指标
+        for deg_type, metrics in metrics_per_type.items():
+            log_dict[f'val/{deg_type}/PSNR'] = np.mean(metrics['psnr'])
+            log_dict[f'val/{deg_type}/SSIM'] = np.mean(metrics['ssim'])
+            log_dict[f'val/{deg_type}/LPIPS'] = np.mean(metrics['lpips'])
+        
+        self.log_metrics(log_dict, step=self.global_step)
+        
+        logger.info(f"Validation completed: PSNR={avg_psnr:.2f}, SSIM={avg_ssim:.4f}, LPIPS={avg_lpips:.4f}, Final_Score={final_score:.2f}")
+
+    def log_metrics(self, metrics_dict, step=None):
+        """统一的指标记录方法，支持accelerator和swanlab"""
+        if step is None:
+            step = self.global_step
+        
+        if not self.accelerator.is_main_process:
+            return
+        
+        # 如果使用SwanLab，直接记录到swanlab
+        if self.config.report_to == "swanlab":
+            import swanlab
+            swanlab.log(metrics_dict, step=step)
+        else:
+            # 使用accelerator记录（会自动同步到配置的tracker如tensorboard）
+            self.accelerator.log(metrics_dict, step=step)
+
     def prepare_all(self):
         logger.info("Wrapping models, optimizers and dataloaders")
         attrs = ["G", "D", "G_opt", "D_opt", "dataloader"]
@@ -311,7 +498,17 @@ class BaseTrainer:
                 * self.config.lambda_lpips
             )
             loss_disc = self.D(x, for_G=True).mean() * self.config.lambda_gan
-            loss_G = loss_l2 + loss_lpips + loss_disc + loss_l1
+            
+            # 添加SSIM损失（如果配置中启用）
+            if hasattr(self.config, 'lambda_ssim') and self.config.lambda_ssim > 0:
+                # 转换到[0,1]范围计算SSIM，并clamp确保严格在[0,1]内
+                x_01 = ((x + 1) / 2).clamp(0, 1)
+                gt_01 = ((self.batch_inputs.gt + 1) / 2).clamp(0, 1)
+                loss_ssim = (1 - self.metric_ssim(x_01, gt_01).mean()) * self.config.lambda_ssim
+            else:
+                loss_ssim = torch.tensor(0.0, device=x.device)
+            
+            loss_G = loss_l2 + loss_lpips + loss_disc + loss_l1 + loss_ssim
             self.accelerator.backward(loss_G)
             if self.accelerator.sync_gradients:
                 self.accelerator.clip_grad_norm_(
@@ -327,6 +524,8 @@ class BaseTrainer:
             G_lpips=loss_lpips,
             G_disc=loss_disc,
         )
+        if hasattr(self.config, 'lambda_ssim') and self.config.lambda_ssim > 0:
+            loss_dict['G_ssim'] = loss_ssim
         return loss_dict
 
     def optimize_discriminator(self):
@@ -403,7 +602,7 @@ class BaseTrainer:
                     for k in train_loss.keys():
                         log_dict[f"loss/{k}"] = train_loss[k]
                     train_loss = {}
-                    self.accelerator.log(log_dict, step=self.global_step)
+                    self.log_metrics(log_dict)
                     if (
                         self.global_step % self.config.log_image_steps == 0
                         or self.global_step == 1
@@ -419,9 +618,23 @@ class BaseTrainer:
                         or self.global_step == 1
                     ):
                         self.save_checkpoint()
+                    
+                    # 验证逻辑
+                    if hasattr(self.config, 'validation_steps') and (
+                        self.global_step % self.config.validation_steps == 0
+                        or self.global_step == 1
+                    ):
+                        self.validate()
 
                 if self.global_step >= self.config.max_train_steps:
                     break
+        
+        # 关闭tracker
+        if self.accelerator.is_main_process and self.config.report_to == "swanlab":
+            import swanlab
+            swanlab.finish()
+            logger.info("SwanLab tracker finished")
+        
         self.accelerator.end_training()
 
     def log_images(self):
@@ -515,7 +728,7 @@ class BaseTrainer:
             for k, v in lora_module_grads.items():
                 grad_dict[f"grad_norm/{k}_{name}"] = torch.norm(torch.cat(v)).item()
             self.G_opt.zero_grad()
-        self.accelerator.log(grad_dict, step=self.global_step)
+        self.log_metrics(grad_dict)
 
     def save_checkpoint(self):
         if self.accelerator.is_main_process:

@@ -19,6 +19,14 @@ class BatchTransform:
 
 class IdentityBatchTransform(BatchTransform):
 
+    def __init__(self, hq_key=None, extra_keys=None, **kwargs):
+        """
+        Identity transform that passes batch through unchanged.
+        Accepts parameters for compatibility with config files but doesn't use them.
+        """
+        super().__init__()
+        # Parameters are accepted but not used since this is an identity transform
+
     def __call__(self, batch: Any) -> Any:
         return batch
 

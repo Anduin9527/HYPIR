@@ -12,3 +12,4 @@ __pycache__
 /output.png
 /results
 pt/*
+inference_results/
