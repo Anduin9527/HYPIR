@@ -1,0 +1,35 @@
+# isBlur 分类器预训练配置
+# 阶段 1a：训练一个准确率 > 95% 的模糊检测器
+
+output_dir: ./results/isblur_pretrain
+
+data:
+  file_list: custom_5k_imp_with_labels.parquet  # 需要先运行 scripts/add_degradation_label.py 生成
+  image_size: 512
+  batch_size: 32  # ResNet18 占用内存较小，可以使用较大 batch size
+  num_workers: 4
+
+# 验证集配置
+val:
+  val_dir: /data/users/gaoyin/datasets/AIO/Val
+  degradation_types: [Blur, Haze, Lowlight, Rain, Snow]
+  image_size: 512
+  num_samples_per_type: ~  # None 表示验证全部图片
+
+# 模型配置
+backbone: resnet18  # 可选: 'resnet18', 'efficientnet_b0'
+                    # resnet18: 更快，11M 参数
+                    # efficientnet_b0: 更准确，5M 参数
+
+# 训练参数
+learning_rate: 1e-3  # 分类任务用较大学习率
+weight_decay: 1e-4   # 正则化，防止过拟合
+num_epochs: 10       # isBlur 是简单的二分类任务，收敛很快
+
+# 加速
+mixed_precision: bf16  # 使用 bfloat16 混合精度训练
+
+# 预期结果：
+# - 准确率: > 95%
+# - 训练时间: ~30 分钟（10 epochs，5K 样本）
+# - 输出: ./results/isblur_pretrain/isblur_best.pth

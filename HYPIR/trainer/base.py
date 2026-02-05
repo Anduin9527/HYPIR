@@ -199,26 +199,111 @@ class BaseTrainer:
 
     def init_optimizers(self):
         logger.info(f"Creating {self.config.optimizer_type} optimizers")
-        if self.config.optimizer_type == "adam":
-            optimizer_cls = torch.optim.AdamW
-        elif self.config.optimizer_type == "rmsprop":
-            optimizer_cls = torch.optim.RMSprop
+        
+        # 检查是否是自定义优化器（包含点号的类路径）
+        if "." in self.config.optimizer_type:
+            # 动态导入自定义优化器
+            module_path, class_name = self.config.optimizer_type.rsplit(".", 1)
+            module = importlib.import_module(module_path)
+            optimizer_cls = getattr(module, class_name)
+            logger.info(f"Loaded custom optimizer: {self.config.optimizer_type}")
+            
+            # 检查是否是 MuonWithAdamWOptimizer
+            if class_name == "MuonWithAdamWOptimizer":
+                # 为 Muon 混合优化器准备参数组
+                self.G_params = list(filter(lambda p: p.requires_grad, self.G.parameters()))
+                self.D_params = list(filter(lambda p: p.requires_grad, self.D.parameters()))
+                
+                # 为生成器创建参数组（分离权重矩阵和其他参数）
+                G_hidden_params = [p for p in self.G_params if p.ndim >= 2]
+                G_other_params = [p for p in self.G_params if p.ndim < 2]
+                
+                G_param_groups = [
+                    {
+                        'params': G_hidden_params, 
+                        'use_muon': True, 
+                        'lr': self.config.opt_kwargs.get('muon_lr', 0.02),
+                        'momentum': self.config.opt_kwargs.get('muon_momentum', 0.95),
+                        'weight_decay': self.config.opt_kwargs.get('muon_weight_decay', 1e-4),
+                        'ns_steps': self.config.opt_kwargs.get('muon_ns_steps', 5),
+                        'nesterov': self.config.opt_kwargs.get('muon_nesterov', True),
+                    },
+                    {
+                        'params': G_other_params, 
+                        'use_muon': False,
+                        'lr': self.config.opt_kwargs.get('adamw_lr', 3e-4),
+                        'betas': self.config.opt_kwargs.get('adamw_betas', (0.9, 0.999)),
+                        'eps': self.config.opt_kwargs.get('adamw_eps', 1e-8),
+                        'weight_decay': self.config.opt_kwargs.get('adamw_weight_decay', 0.01),
+                    }
+                ]
+                
+                # 为判别器创建参数组
+                D_hidden_params = [p for p in self.D_params if p.ndim >= 2]
+                D_other_params = [p for p in self.D_params if p.ndim < 2]
+                
+                D_param_groups = [
+                    {
+                        'params': D_hidden_params, 
+                        'use_muon': True, 
+                        'lr': self.config.opt_kwargs.get('muon_lr', 0.02),
+                        'momentum': self.config.opt_kwargs.get('muon_momentum', 0.95),
+                        'weight_decay': self.config.opt_kwargs.get('muon_weight_decay', 1e-4),
+                        'ns_steps': self.config.opt_kwargs.get('muon_ns_steps', 5),
+                        'nesterov': self.config.opt_kwargs.get('muon_nesterov', True),
+                    },
+                    {
+                        'params': D_other_params, 
+                        'use_muon': False,
+                        'lr': self.config.opt_kwargs.get('adamw_lr', 3e-4),
+                        'betas': self.config.opt_kwargs.get('adamw_betas', (0.9, 0.999)),
+                        'eps': self.config.opt_kwargs.get('adamw_eps', 1e-8),
+                        'weight_decay': self.config.opt_kwargs.get('adamw_weight_decay', 0.01),
+                    }
+                ]
+                
+                self.G_opt = optimizer_cls(G_param_groups)
+                self.D_opt = optimizer_cls(D_param_groups)
+                
+                logger.info(f"G optimizer: {len(G_hidden_params)} params with Muon, {len(G_other_params)} params with AdamW")
+                logger.info(f"D optimizer: {len(D_hidden_params)} params with Muon, {len(D_other_params)} params with AdamW")
+            else:
+                # 其他自定义优化器的通用处理
+                self.G_params = list(filter(lambda p: p.requires_grad, self.G.parameters()))
+                self.G_opt = optimizer_cls(
+                    self.G_params,
+                    lr=self.config.lr_G,
+                    **self.config.opt_kwargs,
+                )
+                
+                self.D_params = list(filter(lambda p: p.requires_grad, self.D.parameters()))
+                self.D_opt = optimizer_cls(
+                    self.D_params,
+                    lr=self.config.lr_D,
+                    **self.config.opt_kwargs,
+                )
         else:
-            optimizer_cls = None
+            # 使用内置优化器
+            if self.config.optimizer_type == "adam":
+                optimizer_cls = torch.optim.AdamW
+            elif self.config.optimizer_type == "rmsprop":
+                optimizer_cls = torch.optim.RMSprop
+            else:
+                raise ValueError(f"Unknown optimizer type: {self.config.optimizer_type}")
 
-        self.G_params = list(filter(lambda p: p.requires_grad, self.G.parameters()))
-        self.G_opt = optimizer_cls(
-            self.G_params,
-            lr=self.config.lr_G,
-            **self.config.opt_kwargs,
-        )
+            self.G_params = list(filter(lambda p: p.requires_grad, self.G.parameters()))
+            self.G_opt = optimizer_cls(
+                self.G_params,
+                lr=self.config.lr_G,
+                **self.config.opt_kwargs,
+            )
 
-        self.D_params = list(filter(lambda p: p.requires_grad, self.D.parameters()))
-        self.D_opt = optimizer_cls(
-            self.D_params,
-            lr=self.config.lr_D,
-            **self.config.opt_kwargs,
-        )
+            self.D_params = list(filter(lambda p: p.requires_grad, self.D.parameters()))
+            self.D_opt = optimizer_cls(
+                self.D_params,
+                lr=self.config.lr_D,
+                **self.config.opt_kwargs,
+            )
 
     def init_dataset(self):
         data_cfg = self.config.data_config

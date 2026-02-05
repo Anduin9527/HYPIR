@@ -1,0 +1,52 @@
+# NAFNet 微调配置（阶段 1b）
+# 在 Blur 类型数据上微调 NAFNet，isBlur 冻结
+
+output_dir: ./results/nafnet_finetune
+
+data:
+  file_list: custom_5k_imp_with_labels.parquet
+  image_size: 512
+  batch_size: 8  # NAFNet 内存占用较大
+  num_workers: 4
+
+# 验证集配置（只验证 Blur 类型）
+val:
+  val_dir: /data/users/gaoyin/datasets/AIO/Val
+  degradation_types: [Blur]  # 只验证 Blur 类型
+  image_size: 512
+  num_samples_per_type: ~  # None 表示验证全部 Blur 图片
+
+# isBlur 配置（冻结）
+isblur:
+  backbone: resnet18
+  checkpoint: ./results/isblur_pretrain/isblur_best.pth  # 阶段 1a 输出
+
+# NAFNet 配置
+nafnet:
+  checkpoint: /data/users/gaoyin/pretrained/nafnet_gopro.pth  # 用户需要提供预训练权重
+  width: 64
+  enc_blks: [1, 1, 1, 28]
+  middle_blk_num: 1
+  dec_blks: [1, 1, 1, 1]
+
+# 训练参数
+learning_rate: 1e-4  # 微调用较小学习率
+weight_decay: 1e-4
+lambda_l1: 1.0       # L1 loss 权重
+lambda_l2: 1.0       # L2 loss 权重
+num_epochs: 100       # 微调 epochs
+gradient_accumulation_steps: 2  # 梯度累积（节省显存）
+
+# 加速
+mixed_precision: bf16
+
+# 预期结果：
+# - PSNR 提升: 在 Blur 验证集上，从 18.3 → 21+ dB
+# - 训练时间: ~2-3 小时（20 epochs，~1000 Blur 样本）
+# - 输出: ./results/nafnet_finetune/deblur_module_best.pth
+#   （包含 isBlur + NAFNet 的完整去模糊模块）
+
+# 注意事项：
+# 1. 需要先完成阶段 1a（isBlur 训练）
+# 2. 需要提供 NAFNet 预训练权重（GoPro 或其他去模糊数据集）
+# 3. 该配置会自动过滤只使用 Blur 类型的数据

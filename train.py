@@ -17,5 +17,9 @@ config.config_name = config_filename
 if config.base_model_type == "sd2":
     trainer = SD2Trainer(config)
     trainer.run()
+elif config.base_model_type == "cascade_sd2":
+    from HYPIR.trainer.cascade_sd2 import CascadeSD2Trainer
+    trainer = CascadeSD2Trainer(config)
+    trainer.run()
 else:
     raise ValueError(f"Unsupported model type: {config.base_model_type}")

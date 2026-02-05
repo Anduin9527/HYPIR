@@ -67,12 +67,61 @@ def parse_args():
     parser.add_argument("--device", type=str, default="cuda",
                         help="运行设备")
     
+    # 级联去模糊选项
+    parser.add_argument("--use_deblur", action="store_true",
+                        help="使用去模糊预处理（级联模式）")
+    parser.add_argument("--deblur_checkpoint", type=str, default=None,
+                        help="去模糊模块 checkpoint 路径")
+    parser.add_argument("--blur_threshold", type=float, default=0.5,
+                        help="isBlur 分类阈值（> threshold 认为是模糊）")
+    
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
     set_seed(args.seed)
+    
+    # 加载去模糊模块（如果启用）
+    isblur_model = None
+    nafnet_model = None
+    if args.use_deblur:
+        if not args.deblur_checkpoint:
+            raise ValueError("启用 --use_deblur 时必须指定 --deblur_checkpoint")
+        
+        print("=" * 60)
+        print("加载去模糊模块...")
+        
+        import torch
+        from HYPIR.model.isblur import BlurClassifier
+        from HYPIR.model.nafnet_wrapper import NAFNetWrapper
+        
+        checkpoint = torch.load(args.deblur_checkpoint, map_location='cpu')
+        deblur_config = checkpoint.get('config', {})
+        
+        # 加载 isBlur
+        isblur_model = BlurClassifier(
+            backbone=deblur_config.get('isblur', {}).get('backbone', 'resnet18')
+        )
+        isblur_model.load_state_dict(checkpoint['isblur'])
+        isblur_model.eval().to(args.device)
+        print(f"  - isBlur 分类器加载完成")
+        
+        # 加载 NAFNet
+        nafnet_config = deblur_config.get('nafnet', {})
+        nafnet_model = NAFNetWrapper(
+            checkpoint_path=None,
+            width=nafnet_config.get('width', 64),
+            enc_blks=nafnet_config.get('enc_blks', [2, 2, 4, 8]),
+            middle_blk_num=nafnet_config.get('middle_blk_num', 12),
+            dec_blks=nafnet_config.get('dec_blks', [2, 2, 2, 2]),
+            freeze=True
+        )
+        nafnet_model.nafnet.load_state_dict(checkpoint['nafnet'])
+        nafnet_model.eval().to(args.device)
+        print(f"  - NAFNet 去模糊网络加载完成")
+        print(f"  - 阈值: {args.blur_threshold}")
+        print("=" * 60)
     
     # 确定权重文件路径
     checkpoint_dir = Path(args.checkpoint)
@@ -162,6 +211,31 @@ def main():
         lq_pil = Image.open(file_path).convert("RGB")
         print(f"  输入尺寸: {lq_pil.size}")
         lq_tensor = to_tensor(lq_pil).unsqueeze(0)
+        
+        # 去模糊预处理（如果启用）
+        if args.use_deblur and isblur_model is not None and nafnet_model is not None:
+            import torch
+            lq_input = lq_tensor * 2 - 1  # [0, 1] -> [-1, 1]
+            lq_input = lq_input.to(args.device)
+            
+            with torch.no_grad():
+                # isBlur 判断
+                is_blur_logits = isblur_model(lq_input)
+                is_blur_prob = torch.sigmoid(is_blur_logits).item()
+                
+                if is_blur_prob > args.blur_threshold:
+                    print(f"  检测到模糊 (概率={is_blur_prob:.3f})，应用 NAFNet 去模糊...")
+                    # NAFNet 去模糊
+                    deblurred = nafnet_model(lq_input)
+                    # 转换回 [0, 1] 并更新 tensor
+                    lq_tensor = ((deblurred + 1) / 2).cpu()
+                else:
+                    print(f"  未检测到模糊 (概率={is_blur_prob:.3f})，跳过去模糊")
+                
+                # 更新 PIL 图像（用于后续处理）
+                from torchvision.transforms import ToPILImage
+                to_pil = ToPILImage()
+                lq_pil = to_pil(lq_tensor.squeeze(0))
         
         # 获取 prompt
         if args.txt_dir is not None:

@@ -1,0 +1,120 @@
+# 级联训练配置（阶段 2）
+# 集成去模糊预处理的 HYPIR 训练
+# Blur 数据先去模糊，其他数据直接训练
+
+output_dir: ./results/cascade_training
+
+data_config:
+  train:
+    batch_size: 4
+    dataloader_num_workers: 4
+    dataset:
+      target: HYPIR.dataset.paired.PairedParquetDataset
+      params:
+        file_meta:
+          file_list: custom_5k_imp_with_labels.parquet  # 需要包含 degradation_type 列
+          lq_key: lq_path
+          gt_key: gt_path
+          prompt_key: prompt
+        out_size: 512
+        crop_type: none
+        use_hflip: true
+        use_rot: true
+        return_file_name: false
+
+    batch_transform:
+      target: HYPIR.dataset.batch_transform.IdentityBatchTransform
+      params:
+        hq_key: GT
+        extra_keys: [LQ, txt]
+
+  val:
+    val_dir: /data/users/gaoyin/datasets/AIO/Val
+    degradation_types: [Blur, Haze, Lowlight, Rain, Snow]
+    batch_size: 1
+    num_samples_per_type: ~  # None 表示验证全部图片
+
+# 模型类型
+base_model_type: cascade_sd2
+base_model_path: stabilityai/stable-diffusion-2-1-base
+
+# ========================================
+# 去模糊模块配置（阶段 1 输出）
+# ========================================
+deblur_module_checkpoint: ./results/nafnet_finetune/deblur_module_best.pth
+blur_threshold: 0.5  # isBlur 分类阈值（> 0.5 认为是模糊）
+
+# ========================================
+# HYPIR 训练参数（与原配置保持一致）
+# ========================================
+model_t: 200
+coeff_t: 200
+lora_rank: 256
+lora_modules: [to_k, to_q, to_v, to_out.0, conv, conv1, conv2, conv_shortcut, conv_out, proj_in, proj_out, ff.net.2, ff.net.0.proj]
+use_ema: true
+ema_decay: 0.999
+resume_ema: true
+
+# 损失权重
+# 注意：由于 Blur 数据已经过去模糊预处理，HYPIR 可以更专注于感知质量提升
+lambda_gan: 0.3        # 降低GAN损失权重（从0.5降到0.3），减少过度平滑
+lambda_lpips: 3.0      # 降低LPIPS权重（从5降到3），平衡感知质量和像素精度
+lambda_l2: 2.0         # 增加L2损失权重（从1增到2），提高PSNR
+lambda_l1: 2.0         # 增加L1损失权重（从1增到2），增强像素级精度
+lambda_ssim: 1.0       # 新增SSIM损失，直接优化SSIM指标
+
+
+lr_G: 1e-5             # 生成器学习率（使用标准优化器时生效）
+lr_D: 1e-5             # 判别器学习率（使用标准优化器时生效）
+
+# 使用 Muon 混合 AdamW 优化器
+# 权重矩阵（ndim>=2）用 Muon 优化，偏置等参数用 AdamW 优化
+optimizer_type: HYPIR.utils.muon_adam_optim.MuonWithAdamWOptimizer
+opt_kwargs:
+  # Muon 参数组配置（用于权重矩阵）
+  muon_lr: 1e-3           # Muon 学习率
+  muon_momentum: 0.95      # Muon 动量
+  muon_weight_decay: 1e-4  # Muon 权重衰减
+  muon_ns_steps: 5         # Newton-Schulz 迭代步数
+  muon_nesterov: true      # 使用 Nesterov 动量
+  # AdamW 参数组配置（用于嵌入层、输出层、偏置等）
+  adamw_lr: 2e-4           # AdamW 学习率
+  adamw_betas: [0.9, 0.999]  # AdamW beta 参数
+  adamw_eps: 1e-8          # AdamW epsilon
+  adamw_weight_decay: 0.01  # AdamW 权重衰减
+
+# 训练配置
+mixed_precision: bf16
+seed: 231
+max_train_steps: 50000
+gradient_accumulation_steps: 2
+gradient_checkpointing: true
+max_grad_norm: 1.0
+
+# 监控和日志
+logging_dir: logs
+report_to: swanlab
+swanlab_project: HYPIR
+checkpointing_steps: 500
+checkpoints_total_limit: 2
+resume_from_checkpoint: ~
+log_image_steps: 100
+log_grad_steps: 100
+log_grad_modules: [conv_out]
+validation_steps: 500
+
+# ========================================
+# 预期效果
+# ========================================
+# - Blur PSNR: 18.3 → 20-22 dB
+# - Blur SSIM: 0.70 → 0.75-0.80
+# - 其他类型: 保持或略有提升
+# - Final_Score: 整体提升
+
+# ========================================
+# 注意事项
+# ========================================
+# 1. 需要先完成阶段 1（isBlur + NAFNet 训练）
+# 2. deblur_module_checkpoint 必须正确指向阶段 1 的输出
+# 3. 数据文件需要包含 degradation_type 列（运行 scripts/add_degradation_label.py）
+# 4. 去模糊模块在训练中是冻结的，不占用梯度更新
