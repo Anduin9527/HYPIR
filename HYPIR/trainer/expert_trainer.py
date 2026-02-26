@@ -57,11 +57,54 @@ class ExpertTrainer:
         logger.info(f"可训练参数: {trainable_params:.2f}M")
 
         # 优化器
-        self.optimizer = torch.optim.AdamW(
-            self.nafnet.parameters(),
-            lr=config.learning_rate,
-            weight_decay=config.get("weight_decay", 1e-4),
-        )
+        if "optimizer_type" in config and "." in config.optimizer_type:
+            import importlib
+
+            module_path, class_name = config.optimizer_type.rsplit(".", 1)
+            module = importlib.import_module(module_path)
+            optimizer_cls = getattr(module, class_name)
+            logger.info(f"Loaded custom optimizer: {config.optimizer_type}")
+
+            if class_name == "MuonWithAdamWOptimizer":
+                nafnet_params = list(
+                    filter(lambda p: p.requires_grad, self.nafnet.parameters())
+                )
+                hidden_params = [p for p in nafnet_params if p.ndim >= 2]
+                other_params = [p for p in nafnet_params if p.ndim < 2]
+
+                param_groups = [
+                    {
+                        "params": hidden_params,
+                        "use_muon": True,
+                        "lr": config.get("muon_lr", 0.02),
+                        "momentum": config.get("muon_momentum", 0.95),
+                        "weight_decay": config.get("weight_decay", 1e-4),
+                        "ns_steps": config.get("muon_ns_steps", 5),
+                        "nesterov": config.get("muon_nesterov", True),
+                    },
+                    {
+                        "params": other_params,
+                        "use_muon": False,
+                        "lr": config.get("learning_rate", 3e-4),
+                        "weight_decay": config.get("weight_decay", 1e-4),
+                    },
+                ]
+                self.optimizer = optimizer_cls(param_groups)
+                logger.info(
+                    f"Optimizer: {len(hidden_params)} params with Muon, {len(other_params)} params with AdamW"
+                )
+            else:
+                self.optimizer = optimizer_cls(
+                    filter(lambda p: p.requires_grad, self.nafnet.parameters()),
+                    lr=config.learning_rate,
+                    weight_decay=config.get("weight_decay", 1e-4),
+                )
+        else:
+            self.optimizer = torch.optim.AdamW(
+                self.nafnet.parameters(),
+                lr=config.learning_rate,
+                weight_decay=config.get("weight_decay", 1e-4),
+            )
 
         # 数据集（按 expert_type 过滤）
         logger.info("=" * 60)
@@ -191,28 +234,41 @@ class ExpertTrainer:
                 pbar.set_postfix({"loss": f"{loss.item():.4f}"})
 
             # 简单的验证（目前从训练集中取10批次简单算一下PSNR）
-            val_psnr, val_ssim, val_lpips, val_score = self._validate_on_train()
+            val_freq = self.config.get("val_freq", 1)
+            if (
+                (epoch + 1) % val_freq == 0
+                or epoch == 0
+                or epoch == self.config.num_epochs - 1
+            ):
+                val_psnr, val_ssim, val_lpips, val_score = self._validate_on_train()
 
-            avg_loss = total_loss / len(self.train_loader)
-            if self.swanlab_run is not None:
-                swanlab.log(
-                    {
-                        "epoch": epoch + 1,
-                        "val/psnr": val_psnr,
-                        "val/ssim": val_ssim,
-                        "val/lpips": val_lpips,
-                        "val/score": val_score,
-                    },
-                    step=global_step,
+                avg_loss = total_loss / len(self.train_loader)
+                if self.swanlab_run is not None:
+                    swanlab.log(
+                        {
+                            "epoch": epoch + 1,
+                            "val/psnr": val_psnr,
+                            "val/ssim": val_ssim,
+                            "val/lpips": val_lpips,
+                            "val/score": val_score,
+                        },
+                        step=global_step,
+                    )
+
+                logger.info(
+                    f"\n{self.expert_type} Epoch {epoch + 1} - Loss: {avg_loss:.4f} PSNR: {val_psnr:.2f} dB, Score: {val_score:.2f}"
                 )
 
-            logger.info(
-                f"\n{self.expert_type} Epoch {epoch + 1} - Loss: {avg_loss:.4f} PSNR: {val_psnr:.2f} dB, Score: {val_score:.2f}"
-            )
-
-            if val_score > best_score and self.accelerator.is_main_process:
-                best_score = val_score
-                self.save_checkpoint(f"{self.expert_type}_expert_best.pth")
+                if val_score > best_score and self.accelerator.is_main_process:
+                    best_score = val_score
+                    self.save_checkpoint(f"{self.expert_type}_expert_best.pth")
+            else:
+                avg_loss = total_loss / len(self.train_loader)
+                if self.swanlab_run is not None:
+                    swanlab.log({"epoch": epoch + 1}, step=global_step)
+                logger.info(
+                    f"\n{self.expert_type} Epoch {epoch + 1} - Loss: {avg_loss:.4f}"
+                )
 
             if (
                 self.accelerator.is_main_process

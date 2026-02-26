@@ -8,9 +8,22 @@ output_dir: "./output/expert_checkpoints"
 mixed_precision: "bf16"
 gradient_accumulation_steps: 1
 num_epochs: 100
+
+# 验证与保存频率 (每隔多少个 epoch 验证一次，以及保存频率)
+val_freq: 5
+save_freq: 5
+
+# --- 优化器设置 ---
+# 如果不填 optimizer_type，默认使用 torch.optim.AdamW
+optimizer_type: "HYPIR.optimizer.muon.MuonWithAdamWOptimizer"
 learning_rate: 2e-4
 weight_decay: 1e-4
-save_freq: 5
+
+# Muon 专属配置（仅当启用 optimizer_type 时生效）
+muon_lr: 1e-3
+muon_momentum: 0.95
+muon_ns_steps: 5
+muon_nesterov: true
 
 # NAFNet 内部基础架构 
 nafnet:
