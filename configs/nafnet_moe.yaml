@@ -1,0 +1,55 @@
+# NAFNet MOE Router 训练配置
+# 当 5 个 NAFNet 预训练完毕后，在这里填入对应的 Checkpoint 开始训练 Router
+
+experiment_name: "nafnet-moe-router"
+output_dir: "./output/moe_router_checkpoints"
+
+# 混合精度与步数累加
+mixed_precision: "bf16"
+gradient_accumulation_steps: 1
+num_epochs: 100
+learning_rate: 1e-4
+weight_decay: 1e-4
+save_freq: 5
+
+# MoE 相关配置
+moe:
+  num_experts: 5
+  router_channels: 32
+  # 如果设为 True，则 5 个 NAFNet 将被冻结，只训练 Router 的参数
+  freeze_experts: true
+  # 负载均衡 Loss 惩罚系数
+  lambda_balance: 0.1
+  # 在此处填写 5 个独立专家的模型路径绝对路径
+  expert_checkpoints:
+    - "/path/to/your/expert_0_blur.pth"
+    - "/path/to/your/expert_1_noise.pth"
+    - "/path/to/your/expert_2_jpeg.pth"
+    - "/path/to/your/expert_3_downsample.pth"
+    - "/path/to/your/expert_4_mix.pth"
+
+# NAFNet 内部基础架构 (需与 pre-trained weight 结构完全匹配)
+nafnet:
+  width: 64
+  middle_blk_num: 12
+  enc_blk_nums: [2, 2, 4, 8]
+  dec_blk_nums: [2, 2, 2, 2]
+
+# 重建损失系数
+lambda_l1: 1.0
+lambda_l2: 1.0
+
+# 数据相关
+data:
+  # 您的混合数据集 meta json
+  file_list: "/path/to/your/mixed_degradation_meta.json"
+  image_size: 256
+  batch_size: 8
+  num_workers: 8
+  crop_type: "random"
+
+# 验证集相关 (可选)
+val:
+  val_dir: "/path/to/your/validation_dir"
+  degradation_types: ["Blur", "Noise", "JPEG", "Mix"]
+  num_samples_per_type: 10

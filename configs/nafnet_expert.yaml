@@ -1,0 +1,35 @@
+# NAFNet Expert 独立预训练配置
+# 调用方法: python train_expert.py --config configs/nafnet_expert.yaml --expert_type Rain
+
+experiment_name: "nafnet-expert"
+output_dir: "./output/expert_checkpoints"
+
+# 混合精度与步数累加
+mixed_precision: "bf16"
+gradient_accumulation_steps: 1
+num_epochs: 100
+learning_rate: 2e-4
+weight_decay: 1e-4
+save_freq: 5
+
+# NAFNet 内部基础架构 
+nafnet:
+  width: 64
+  middle_blk_num: 12
+  enc_blks: [2, 2, 4, 8]
+  dec_blks: [2, 2, 2, 2]
+  # 从头预训练无需填 checkpoint
+  checkpoint: null
+
+# 重建损失系数
+lambda_l1: 1.0
+lambda_l2: 0.0
+
+# 数据相关
+data:
+  # 您的混合数据集 meta parquet，ExpertTrainer 会用自动过滤提取相关的行
+  file_list: "custom_5k_imp_with_labels.parquet"
+  image_size: 512
+  batch_size: 16
+  num_workers: 8
+  crop_type: "random"
