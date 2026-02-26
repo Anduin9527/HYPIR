@@ -274,7 +274,13 @@ class ExpertTrainer:
                 self.accelerator.is_main_process
                 and (epoch + 1) % self.config.get("save_freq", 5) == 0
             ):
-                self.save_checkpoint(f"{self.expert_type}_expert_epoch_{epoch + 1}.pth")
+                # Delete older checkpoint if it exists
+                if hasattr(self, "last_saved_ckpt") and self.last_saved_ckpt.exists():
+                    self.last_saved_ckpt.unlink(missing_ok=True)
+
+                ckpt_name = f"{self.expert_type}_expert_epoch_{epoch + 1}.pth"
+                self.save_checkpoint(ckpt_name)
+                self.last_saved_ckpt = Path(self.config.output_dir) / ckpt_name
 
         if self.swanlab_run is not None:
             swanlab.finish()
