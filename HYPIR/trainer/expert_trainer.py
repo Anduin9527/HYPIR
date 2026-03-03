@@ -15,6 +15,7 @@ from tqdm import tqdm
 import pyiqa
 from pathlib import Path
 import swanlab
+from diffusers.optimization import get_cosine_schedule_with_warmup
 
 # 这里使用只包装了一个本地 NAFNet 的 NAFNetWrapper
 from HYPIR.model.nafnet_wrapper import NAFNetWrapper
@@ -158,11 +159,6 @@ class ExpertTrainer:
             self.metric_lpips.eval()
             self.metric_lpips.requires_grad_(False)
 
-        # Prepare
-        self.nafnet, self.optimizer, self.train_loader = self.accelerator.prepare(
-            self.nafnet, self.optimizer, self.train_loader
-        )
-
         # 初始化 SwanLab (仅在主进程)
         self.swanlab_run = None
         if self.accelerator.is_main_process:
@@ -176,6 +172,29 @@ class ExpertTrainer:
                 )
             except Exception as e:
                 logger.warning(f"⚠️ SwanLab 初始化失败: {e}")
+
+        # 学习率调度器 (Warmup + Cosine Annealing)
+        num_update_steps_per_epoch = len(self.train_loader) // config.get(
+            "gradient_accumulation_steps", 1
+        )
+        max_train_steps = config.num_epochs * num_update_steps_per_epoch
+        warmup_steps = config.get("lr_warmup_steps", 0)
+
+        logger.info(
+            f"配置 LR Scheduler: max_steps={max_train_steps}, warmup_steps={warmup_steps}"
+        )
+        self.lr_scheduler = get_cosine_schedule_with_warmup(
+            optimizer=self.optimizer,
+            num_warmup_steps=warmup_steps,
+            num_training_steps=max_train_steps,
+        )
+
+        # Prepare 包含 scheduler
+        self.nafnet, self.optimizer, self.train_loader, self.lr_scheduler = (
+            self.accelerator.prepare(
+                self.nafnet, self.optimizer, self.train_loader, self.lr_scheduler
+            )
+        )
 
     def train(self):
         best_score = -float("inf")  # Use joint Score instead of just PSNR
@@ -210,6 +229,7 @@ class ExpertTrainer:
 
                 if (batch_idx + 1) % self.config.gradient_accumulation_steps == 0:
                     self.optimizer.step()
+                    self.lr_scheduler.step()
                     self.optimizer.zero_grad()
                     global_step += 1
 

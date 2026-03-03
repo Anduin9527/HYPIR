@@ -18,6 +18,7 @@ save_freq: 5
 optimizer_type: "HYPIR.utils.muon_adam_optim.MuonWithAdamWOptimizer"
 learning_rate: 2e-4
 weight_decay: 1e-4
+lr_warmup_steps: 1000
 
 # Muon 专属配置（仅当启用 optimizer_type 时生效）
 muon_lr: 1e-3
