@@ -13,3 +13,7 @@ __pycache__
 /results
 pt/*
 inference_results/
+Temp/
+swanlog/
+output/
+*.zip

@@ -6,8 +6,8 @@ output_dir: "./output/expert_checkpoints"
 
 # 混合精度与步数累加
 mixed_precision: "bf16"
-gradient_accumulation_steps: 1
-num_epochs: 100
+gradient_accumulation_steps: 2
+num_epochs: 200
 
 # 验证与保存频率 (每隔多少个 epoch 验证一次，以及保存频率)
 val_freq: 5
@@ -15,7 +15,7 @@ save_freq: 5
 
 # --- 优化器设置 ---
 # 如果不填 optimizer_type，默认使用 torch.optim.AdamW
-optimizer_type: "HYPIR.optimizer.muon.MuonWithAdamWOptimizer"
+optimizer_type: "HYPIR.utils.muon_adam_optim.MuonWithAdamWOptimizer"
 learning_rate: 2e-4
 weight_decay: 1e-4
 
@@ -43,6 +43,6 @@ data:
   # 您的混合数据集 meta parquet，ExpertTrainer 会用自动过滤提取相关的行
   file_list: "custom_5k_imp_with_labels.parquet"
   image_size: 512
-  batch_size: 16
-  num_workers: 8
+  batch_size: 6
+  num_workers: 6
   crop_type: "random"
