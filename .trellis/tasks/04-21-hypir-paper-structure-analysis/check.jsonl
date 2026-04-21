@@ -1,0 +1,6 @@
+{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Bootstrap backend guidance index for this repo"}
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared thinking guidance for cross-layer and reuse checks"}
+{"file": "HYPIR/trainer/base.py", "reason": "Verify paper-alignment claims against actual trainer behavior"}
+{"file": "CASCADE_TRAINING_GUIDE.md", "reason": "Validate local deblurring extension intent"}

@@ -1,0 +1,5 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared thinking guidance for cross-layer and reuse checks"}
+{"file": "HYPIR/trainer/base.py", "reason": "Core training loop, frozen VAE behavior, adversarial objective"}
+{"file": "README.md", "reason": "Paper-facing repo overview and official SD2 workflow"}
+{"file": "HYPIR/trainer/cascade_sd2.py", "reason": "Modified cascade path that injects external deblur preprocessing"}
